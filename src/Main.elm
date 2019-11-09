@@ -6,12 +6,57 @@ import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
 import Json.Decode as JD
+import List.Extra
 import Task
 import Time
 
 
 
 ---- MODEL ----
+
+
+type CoderType
+    = Praktikant
+
+
+type alias Coder =
+    { name : String
+    , coderType : CoderType
+    , locPerTickGain : Int
+    , alreadyUnlocked : Bool
+    , basePrice : Int
+    , priceMultiplier : Float
+    , iconType : IconType
+    , count : Int
+    }
+
+
+praktikant : Coder
+praktikant =
+    { name = "Praktikant"
+    , coderType = Praktikant
+    , locPerTickGain = 1
+    , alreadyUnlocked = False
+    , basePrice = 3
+    , priceMultiplier = 1.03
+    , iconType = Blondeface
+    , count = 0
+    }
+
+
+type alias Icons =
+    Dict String String
+
+
+type IconType
+    = Moneybag
+    | Page
+    | Mailbox
+    | Blondeface
+    | Blackhairedface
+    | Redhairedface
+    | Keyboard
+    | Envelope
 
 
 type alias Model =
@@ -21,7 +66,33 @@ type alias Model =
     , manuallyGeneratedLoc : Int
     , manuallyGeneratedMoney : Int
     , icons : Icons
+    , coders : List Coder
     }
+
+
+isUnlocked : CoderType -> Model -> Bool
+isUnlocked coderType model =
+    case coderType of
+        Praktikant ->
+            model.manuallyGeneratedMoney >= 2
+
+
+calculatePrice : Int -> Float -> Int -> Int
+calculatePrice basePrice multiplier count =
+    toFloat basePrice
+        * (multiplier ^ toFloat count)
+        |> round
+
+
+isUsable : Coder -> Model -> Bool
+isUsable coder model =
+    let
+        currentPrice =
+            calculatePrice coder.basePrice coder.priceMultiplier coder.count
+    in
+    case coder.coderType of
+        Praktikant ->
+            model.currentMoney >= currentPrice
 
 
 
@@ -34,6 +105,29 @@ type Msg
     | InitialTime Time.Posix
     | WriteSomeCode
     | ConvertCodeToMoney
+    | BuyCoder Coder
+
+
+tick : Model -> Int -> Model
+tick model ticks =
+    if ticks == 0 then
+        model
+
+    else
+        let
+            new
+        in
+        
+        tick model (ticks - 1)
+
+
+gameloop : Model -> Int -> Model
+gameloop model timediff =
+    let
+        ticks =
+            round (toFloat timediff / 1000)
+    in
+    tick model ticks
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -43,7 +137,14 @@ update msg model =
             ( { model | lastTick = Time.posixToMillis time }, Cmd.none )
 
         Tick time ->
-            ( { model | lastTick = Time.posixToMillis time }, Cmd.none )
+            let
+                millisTime =
+                    Time.posixToMillis time
+
+                modelAfterTick =
+                    gameloop model (millisTime - model.lastTick)
+            in
+            ( { modelAfterTick | lastTick = millisTime }, Cmd.none )
 
         WriteSomeCode ->
             ( { model | manuallyGeneratedLoc = model.manuallyGeneratedLoc + 1, currentLoc = model.currentLoc + 1 }, Cmd.none )
@@ -56,8 +157,37 @@ update msg model =
 
                     else
                         ( model.currentLoc, model.currentMoney, model.manuallyGeneratedMoney )
+
+                checkAndUnlockCoder : Coder -> Coder
+                checkAndUnlockCoder coder =
+                    let
+                        unlocked =
+                            coder.alreadyUnlocked || isUnlocked coder.coderType model
+                    in
+                    { coder | alreadyUnlocked = unlocked }
+
+                allUnlockedCoders =
+                    List.map checkAndUnlockCoder model.coders
             in
-            ( { model | currentLoc = newLoc, currentMoney = newMoney, manuallyGeneratedMoney = newManuallyGeneratedMoney }, Cmd.none )
+            ( { model | coders = allUnlockedCoders, currentLoc = newLoc, currentMoney = newMoney, manuallyGeneratedMoney = newManuallyGeneratedMoney }, Cmd.none )
+
+        BuyCoder coder ->
+            let
+                currentPrice =
+                    calculatePrice coder.basePrice coder.priceMultiplier coder.count
+
+                ( newMoney, newCoder ) =
+                    if isUsable coder model then
+                        ( model.currentMoney - currentPrice, { coder | count = coder.count + 1 } )
+
+                    else
+                        ( model.currentMoney, coder )
+
+                updatedCoders =
+                    -- updateIf : (a -> Bool) -> (a -> a) -> List a -> List a
+                    List.Extra.updateIf (\c -> c.coderType == coder.coderType) (\_ -> newCoder) model.coders
+            in
+            ( model, Cmd.none )
 
         NoOp ->
             ( model, Cmd.none )
@@ -103,10 +233,19 @@ statsArea model =
 
 buyingArea : Model -> Html Msg
 buyingArea model =
+    let
+        visibleCoders =
+            List.filter .alreadyUnlocked model.coders
+
+        oneCoder : Coder -> Html Msg
+        oneCoder coder =
+            li []
+                [ buyButton model.icons coder (BuyCoder coder) (isUsable coder model)
+                ]
+    in
     div [ class "buying-area" ]
         [ ol []
-            [ li [] [ text (String.fromInt model.currentLoc ++ " LoC") ]
-            ]
+            (List.map oneCoder visibleCoders)
         ]
 
 
@@ -125,6 +264,22 @@ iconButton icons txt iconType msg isEnabled =
         [ span []
             [ iconImg icons iconType
             , span [ class "icon-button__text" ] [ text txt ]
+            ]
+        ]
+
+
+buyButton : Icons -> Coder -> Msg -> Bool -> Html Msg
+buyButton icons coder msg isEnabled =
+    button [ type_ "button", class "buy-button", onClick msg, disabled (not isEnabled) ]
+        [ div [ class "buy-button__info-wrapper" ]
+            [ div []
+                [ iconImg icons coder.iconType
+                , span [ class "buy-button__name-text" ] [ text coder.name ]
+                ]
+            , div []
+                [ iconImg icons Moneybag
+                , span [ class "buy-button__cost-text" ] [ text <| String.fromInt <| calculatePrice coder.basePrice coder.priceMultiplier coder.count ]
+                ]
             ]
         ]
 
@@ -163,21 +318,6 @@ decodeIconList =
 decodeFlags : JD.Decoder (List ( String, String ))
 decodeFlags =
     JD.field "icons" decodeIconList
-
-
-type alias Icons =
-    Dict String String
-
-
-type IconType
-    = Moneybag
-    | Page
-    | Mailbox
-    | Blondeface
-    | Blackhairedface
-    | Redhairedface
-    | Keyboard
-    | Envelope
 
 
 getIconUrl : Icons -> IconType -> String
@@ -241,6 +381,7 @@ init flags =
       , manuallyGeneratedLoc = 0
       , manuallyGeneratedMoney = 0
       , icons = asDict
+      , coders = [ praktikant ]
       }
     , Task.perform InitialTime Time.now
     )
